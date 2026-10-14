@@ -137,6 +137,63 @@ describe('GET /games/:id', () => {
   });
 });
 
+describe('GET /games/:id/legal', () => {
+  it('returns the seat’s legal actions plus the version to act against', async () => {
+    const game = await createThreePlayerGame();
+    const response = await app.inject({ method: 'GET', url: `/games/${game.id}/legal?playerId=p1` });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      legalActions: { type: string }[];
+      version: number;
+      activePlayerId: string | null;
+      gameType: string;
+    };
+    // The active seat always has at least the turn-ending move — the same invariant the UI and bot
+    // lean on. (PRODUCE needs placements, so it is offered as a marker, not a playable action.)
+    expect(body.legalActions.map((a) => a.type)).toContain('END_TURN');
+    expect(body.version).toBe(0);
+    expect(body.activePlayerId).toBe('p1');
+    expect(body.gameType).toBe('container');
+  });
+
+  it('follows the turn: the next seat’s actions, with the advanced version', async () => {
+    const game = await createThreePlayerGame();
+    await act(game.id, 'p1', { type: 'END_TURN' });
+    const response = await app.inject({ method: 'GET', url: `/games/${game.id}/legal?playerId=p2` });
+    const body = response.json() as {
+      legalActions: { type: string }[];
+      version: number;
+      activePlayerId: string | null;
+    };
+    expect(body.activePlayerId).toBe('p2');
+    expect(body.version).toBe(1);
+    expect(body.legalActions.length).toBeGreaterThan(0);
+  });
+
+  it('omits playerId to give the module’s own default (the active seat)', async () => {
+    const game = await createThreePlayerGame();
+    const response = await app.inject({ method: 'GET', url: `/games/${game.id}/legal` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().legalActions.length).toBeGreaterThan(0);
+  });
+
+  it('reports an off-turn seat’s own waiting actions, not the active seat’s turn', async () => {
+    const game = await createThreePlayerGame();
+    const active = await app.inject({ method: 'GET', url: `/games/${game.id}/legal?playerId=p1` });
+    const waiting = await app.inject({ method: 'GET', url: `/games/${game.id}/legal?playerId=p2` });
+    // `legalActions` is asked about a *seat*, so the two answers differ; p2 may only borrow while
+    // waiting (Container rulebook pg. 16), never end p1's turn.
+    expect(active.json().legalActions.map((a: { type: string }) => a.type)).toContain('END_TURN');
+    expect(waiting.json().legalActions.map((a: { type: string }) => a.type)).not.toContain('END_TURN');
+  });
+
+  it('returns 404 for an unknown game', async () => {
+    const response = await app.inject({ method: 'GET', url: '/games/does-not-exist/legal?playerId=p1' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe('GAME_NOT_FOUND');
+  });
+});
+
 describe('Game payload seat identity (REVIEW §3.3)', () => {
   // Shape asserted structurally so a game that named its seats differently can't quietly satisfy it.
   interface IdentityPayload {

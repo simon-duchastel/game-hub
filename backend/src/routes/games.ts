@@ -148,6 +148,32 @@ export function registerGameRoutes(app: FastifyInstance, services: AppServices):
     });
   });
 
+  // One round-trip for an external agent to decide: the exact actions a seat may legally submit,
+  // plus the version to send back as `expectedVersion`. Mirrors `GET /games/:id` for loading and the
+  // bot turn self-heal, but is *not* viewer-projected — `legalActions` never reads a scoring card
+  // (the bot and the UI both rely on that), so it is safe on the authoritative state rather than a
+  // view. `playerId` is optional, matching the module contract: omitted ⇒ the game's own default
+  // (usually the active seat).
+  app.get<{ Params: { id: string }; Querystring: { playerId?: string } }>(
+    '/games/:id/legal',
+    async (request, reply) => {
+      const loaded = load(reply, request.params.id);
+      if (!loaded) return reply;
+      // Same self-heal as `GET /games/:id`: a bot already on the clock must not sit there forever.
+      tick(request.params.id);
+      const { module } = loaded;
+      // Re-read: the bots may have moved it on since `load` (which already migrated the row).
+      const state = repo.get(module, request.params.id)!;
+      const summary = module.summarize(state);
+      return reply.send({
+        legalActions: module.legalActions(state, request.query.playerId),
+        version: module.versionOf(state),
+        activePlayerId: summary.activePlayerId,
+        gameType: module.id,
+      });
+    },
+  );
+
   app.post<{ Params: { id: string }; Body: ActionBody; Querystring: { viewer?: string } }>(
     '/games/:id/actions',
     {
